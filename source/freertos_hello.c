@@ -42,6 +42,7 @@
 #include "fsl_debug_console.h"
 #include "fsl_dac.h"
 #include "fsl_adc16.h"
+#include "fsl_dma.h"
 #include "board.h"
 #include "lookup.h"
 #include "pin_mux.h"
@@ -73,6 +74,7 @@ adc16_channel_config_t g_adc16ChannelConfigStruct;
  ******************************************************************************/
 const TickType_t xDelay100ms = pdMS_TO_TICKS( 100 );
 static void SwTimerCallback(TimerHandle_t xTimer);
+void DMA_Callback(dma_handle_t *handle, void *param);
 
 /* Task priorities. */
 #define dac_task_PRIORITY (configMAX_PRIORITIES - 3)
@@ -90,6 +92,10 @@ static void DSPTask(void *pvParamaters);
 CircBuffer_t * Buffer;
   uint8_t flag_w=0;
   uint8_t flag_dsp=0;
+  dma_handle_t g_DMA_Handle;
+  volatile bool g_Transfer_Done = false;
+#define DMA_CHANNEL 0
+#define DMA_SOURCE 63
 /*******************************************************************************
  * Code
  ******************************************************************************/
@@ -117,6 +123,12 @@ int main(void)
     vTaskStartScheduler();
     for (;;)
         ;
+}
+
+
+void DMA_Callback(dma_handle_t *handle, void *param)
+{
+    g_Transfer_Done = true;
 }
 
 
@@ -187,6 +199,18 @@ static void ADCTask(void *pvParameters)
 	    			        PRINTF("ADC Value: %d\r\n", ADC16_GetChannelConversionValue(DEMO_ADC16_BASEADDR, DEMO_ADC16_CHANNEL_GROUP));
 	    			        CBAdd(Buffer, g_Adc16ConversionValue, &flag_dsp);
 
+	    			        DMAMUX_Init(DMAMUX0);
+	    			            DMAMUX_SetSource(DMAMUX0, DMA_CHANNEL, DMA_SOURCE);
+	    			            DMAMUX_EnableChannel(DMAMUX0, DMA_CHANNEL);
+	    			            /* Configure DMA one shot transfer */
+	    			            DMA_Init(DMA0);
+	    			            DMA_CreateHandle(&g_DMA_Handle, DMA0, DMA_CHANNEL);
+	    			            DMA_SetCallback(&g_DMA_Handle, DMA_Callback, NULL);
+	    			        //    DMA_PrepareTransfer(&transferConfig, srcAddr, sizeof(srcAddr[0]), destaddr, sizeof(destaddr[0]), sizeof(srcAddr),
+	    			       //                         kDMA_MemoryToMemory);
+	    			        //    DMA_SubmitTransfer(&g_DMA_Handle, &transferConfig, kDMA_EnableInterrupt);
+	    			            DMA_StartTransfer(&g_DMA_Handle);
+
 
 	          if (flag_dsp==0){
 	        	  xTaskCreate(DSPTask, "DSPTask", configMINIMAL_STACK_SIZE+100, NULL, dsp_task_PRIORITY, NULL);
@@ -229,7 +253,7 @@ static void DACTask(void *pvParameters)
             while(index<50)
             {
             	//DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, lookup[index]);
-            	printf("\n\rlookup index value is %d : %d ",lookup[index],index);
+            	PRINTF("\n\rlookup index value is %d : %d ",lookup[index],index);
             	index++;
 //            	if(50==index)
 //            	{
@@ -261,7 +285,7 @@ static void DACTask(void *pvParameters)
             	DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, buffer[i]);
             	if(flag_w==1)
             	{
-            		printf("\n\r Value is set to DAC0 J10 pin");
+            		PRINTF("\n\r Value is set to DAC0 J10 pin");
             		DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, buffer[i]);
             		flag_w=0;
             	}
