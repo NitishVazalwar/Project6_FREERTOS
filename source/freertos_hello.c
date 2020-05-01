@@ -47,7 +47,7 @@
 #include "lookup.h"
 #include "pin_mux.h"
 #include "fsl_gpio.h"
-
+#include "fsl_dmamux.h"
 /*******************************************************************************
  * Definitions
  ******************************************************************************/
@@ -73,12 +73,13 @@ adc16_channel_config_t g_adc16ChannelConfigStruct;
  * SW_Timer
  ******************************************************************************/
 const TickType_t xDelay100ms = pdMS_TO_TICKS( 100 );
+const TickType_t xDelay1ms = pdMS_TO_TICKS(1);
 static void SwTimerCallback(TimerHandle_t xTimer);
 void DMA_Callback(dma_handle_t *handle, void *param);
 
 /* Task priorities. */
-#define dac_task_PRIORITY (configMAX_PRIORITIES - 3)
-#define adc_task_PRIORITY (configMAX_PRIORITIES-2)
+#define dac_task_PRIORITY (configMAX_PRIORITIES - 2)
+#define adc_task_PRIORITY (configMAX_PRIORITIES-3)
 #define dsp_task_PRIORITY (configMAX_PRIORITIES-1)
 /*******************************************************************************
  * Prototypes
@@ -90,12 +91,19 @@ static void DSPTask(void *pvParamaters);
  * Declarations
  ******************************************************************************/
 CircBuffer_t * Buffer;
-  uint8_t flag_w=0;
-  uint8_t flag_dsp=0;
+uint16_t ADCBuffer[51];
+uint16_t DSPBuffer[51];
+volatile uint8_t counter_variable;
+volatile  uint8_t flag_w=0;
+ volatile uint8_t flag_dsp=0;
+  volatile uint8_t flag_dma=0;
   dma_handle_t g_DMA_Handle;
+  dma_transfer_config_t transferConfig;
   volatile bool g_Transfer_Done = false;
 #define DMA_CHANNEL 0
 #define DMA_SOURCE 63
+volatile TimerHandle_t SwTimerHandle = NULL;
+static volatile int iterator;
 /*******************************************************************************
  * Code
  ******************************************************************************/
@@ -108,7 +116,6 @@ int main(void)
     BOARD_InitPins();
     BOARD_BootClockRUN();
     BOARD_InitDebugConsole();
-    TimerHandle_t SwTimerHandle = NULL;
       SystemCoreClockUpdate();
       /* Create the software timer. */
       SwTimerHandle = xTimerCreate("SwTimer",          /* Text name. */
@@ -131,15 +138,23 @@ void DMA_Callback(dma_handle_t *handle, void *param)
     g_Transfer_Done = true;
 }
 
-
+void DEMO_ADC16_IRQ_HANDLER_FUNC(void)
+	    {
+	        g_Adc16ConversionDoneFlag = true;
+	        /* Read conversion result to clear the conversion completed flag. */
+	        g_Adc16ConversionValue = ADC16_GetChannelConversionValue(DEMO_ADC16_BASEADDR, DEMO_ADC16_CHANNEL_GROUP);
+	        PRINTF("\n\r g_ADCConverion value is %d",g_Adc16ConversionValue);
+	        PRINTF("\n\r Counter value is %d", counter_variable);
+	        ADCBuffer[counter_variable]=g_Adc16ConversionValue;
+	    }
 static void ADCTask(void *pvParameters)
 {
-
+	TickType_t DMAStart,DMAStop;
 	Buffer=CircBufferCreate();
 	CBufferReturn_t ret 	= CircularBufferInit(Buffer, SIZE);
 	if(ret != SUCCESS)
 				{
-					printf("Circular buffer  failed");
+					PRINTF("Circular buffer  failed");
 
 					//logString(LL_Debug, FN_uartInit, "Creation of rx Buffer Failed\n\r\0");
 					return;
@@ -148,7 +163,7 @@ static void ADCTask(void *pvParameters)
 	//ADC init starts
 	TickType_t Lastwakeuptime;
 	Lastwakeuptime = xTaskGetTickCount();
-	printf("\n\rADC TASk");
+	printf("\n\rADC TASK");
 	 adc16_config_t adc16ConfigStruct;
 	 adc16_channel_config_t adc16ChannelConfigStruct;
 
@@ -181,12 +196,7 @@ static void ADCTask(void *pvParameters)
 	//End of ADC initialisation
 
 
-	    void DEMO_ADC16_IRQ_HANDLER_FUNC(void)
-	    {
-	        g_Adc16ConversionDoneFlag = true;
-	        /* Read conversion result to clear the conversion completed flag. */
-	        g_Adc16ConversionValue = ADC16_GetChannelConversionValue(DEMO_ADC16_BASEADDR, DEMO_ADC16_CHANNEL_GROUP);
-	    }
+
 
 
 
@@ -196,9 +206,35 @@ static void ADCTask(void *pvParameters)
 	    			        {
 	    			        }
 
+	    			        for(counter_variable=0;counter_variable<50;counter_variable++)
+	    			        {
 	    			        PRINTF("ADC Value: %d\r\n", ADC16_GetChannelConversionValue(DEMO_ADC16_BASEADDR, DEMO_ADC16_CHANNEL_GROUP));
+	    			        g_Adc16ConversionValue = ADC16_GetChannelConversionValue(DEMO_ADC16_BASEADDR, DEMO_ADC16_CHANNEL_GROUP);
+	    			       // PRINTF("\n\r g_ADCConverion value is %d",g_Adc16ConversionValue);
+	    			        //PRINTF("\n\r Counter value is %d", counter_variable);
+	    			        ADCBuffer[counter_variable]=g_Adc16ConversionValue;
+	    			        PRINTF("\nValue inside ADCBuffer[%d] is %d",counter_variable,ADCBuffer[counter_variable]);
 	    			        CBAdd(Buffer, g_Adc16ConversionValue, &flag_dsp);
 
+	    			        }
+
+	    			        PRINTF("\n\rInside DMA");
+	    			        DMAStart = xTaskGetTickCount();
+
+	    			        DMAStop = DMAStart + (5*xDelay100ms);
+
+	    			        while(DMAStart != DMAStop){
+
+	    			        	DMAStart = xTaskGetTickCount();
+	    			        	//TURN LED BLUE ON
+	    			        	PRINTF("\n\rBLUE ON");
+	    			        	Control_RGB_LEDs(0, 0, 1);
+	    			        }
+
+	    			        // Turn led off
+	    			        PRINTF("\n\rOFF");
+	    			        Control_RGB_LEDs(0, 0, 0);
+	    			        if(flag_dma=1){
 	    			        DMAMUX_Init(DMAMUX0);
 	    			            DMAMUX_SetSource(DMAMUX0, DMA_CHANNEL, DMA_SOURCE);
 	    			            DMAMUX_EnableChannel(DMAMUX0, DMA_CHANNEL);
@@ -206,15 +242,21 @@ static void ADCTask(void *pvParameters)
 	    			            DMA_Init(DMA0);
 	    			            DMA_CreateHandle(&g_DMA_Handle, DMA0, DMA_CHANNEL);
 	    			            DMA_SetCallback(&g_DMA_Handle, DMA_Callback, NULL);
-	    			        //    DMA_PrepareTransfer(&transferConfig, srcAddr, sizeof(srcAddr[0]), destaddr, sizeof(destaddr[0]), sizeof(srcAddr),
-	    			       //                         kDMA_MemoryToMemory);
-	    			        //    DMA_SubmitTransfer(&g_DMA_Handle, &transferConfig, kDMA_EnableInterrupt);
+	    			            DMA_PrepareTransfer(&transferConfig, ADCBuffer, sizeof(ADCBuffer[0]), destaddr, sizeof(destaddr[0]), sizeof(ADCBuffer),
+	    			                                kDMA_MemoryToMemory);
+	    			            DMA_SubmitTransfer(&g_DMA_Handle, &transferConfig, kDMA_EnableInterrupt);
 	    			            DMA_StartTransfer(&g_DMA_Handle);
 
+	    			            flag_dma=0;
+	    			            flag_dsp=1;
+	    			        }
 
-	          if (flag_dsp==0){
+	          if (flag_dsp==1){
 	        	  xTaskCreate(DSPTask, "DSPTask", configMINIMAL_STACK_SIZE+100, NULL, dsp_task_PRIORITY, NULL);
 	          }
+
+	          for(int j=0;j<51;j++){PRINTF("\n\r dest buffer[%d] %d",j,destaddr[j]);}
+	      	  Lastwakeuptime = xTaskGetTickCount();
 	          vTaskDelayUntil(&Lastwakeuptime, xDelay100ms);
 }
 
@@ -223,7 +265,15 @@ static void ADCTask(void *pvParameters)
  */
 static void DACTask(void *pvParameters)
 {
-
+	  dac_config_t dacConfigStruct;
+	        DAC_GetDefaultConfig(&dacConfigStruct);
+	            DAC_Init(DEMO_DAC_BASEADDR, &dacConfigStruct);
+	            DAC_Enable(DEMO_DAC_BASEADDR, true);             /* Enable output. */
+	            DAC_SetBufferReadPointer(DEMO_DAC_BASEADDR, 0U); /* Make sure the read pointer to the start. */
+	                                                             /*
+	                                                             * The buffer is not enabled, so the read pointer can not move automatically. However, the buffer's read pointer
+	                                                             * and items can be written manually by user.
+	                                                             */
     for (;;)
     {
         PRINTF("Program one Dac-adc\r\n");
@@ -234,34 +284,27 @@ static void DACTask(void *pvParameters)
 
 
         //DAC
-        dac_config_t dacConfigStruct;
-        DAC_GetDefaultConfig(&dacConfigStruct);
-            DAC_Init(DEMO_DAC_BASEADDR, &dacConfigStruct);
-            DAC_Enable(DEMO_DAC_BASEADDR, true);             /* Enable output. */
-            DAC_SetBufferReadPointer(DEMO_DAC_BASEADDR, 0U); /* Make sure the read pointer to the start. */
-                                                             /*
-                                                             * The buffer is not enabled, so the read pointer can not move automatically. However, the buffer's read pointer
-                                                             * and items can be written manually by user.
-                                                             */
-            uint8_t index=0;
+
+            //uint8_t index=0;
             //log values
 //            for(index= 0;index<50;index++)
 //               {
 //               	DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, lookup[index]);
 //               	PRINTF("DAC out: %d\r\n",lookup[index]);
 //               }
-            while(index<50)
-            {
-            	//DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, lookup[index]);
-            	PRINTF("\n\rlookup index value is %d : %d ",lookup[index],index);
-            	index++;
+//            while(index<50)
+//            {
+//            	DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, lookup[index]);
+//            	PRINTF("\n\rlookup index value is %d : %d ",lookup[index],index);
+//            	index++;
 //            	if(50==index)
 //            	{
 //            		index=0;
 //            	}
-
-            	vTaskDelayUntil(&Lastwakeuptime, xDelay100ms);
-            }
+//                Lastwakeuptime = xTaskGetTickCount();
+//            	//vTaskDelayUntil(&Lastwakeuptime, xDelay100ms);
+//                vTaskDelay(xDelay100ms);
+//            }
 
             //Note:Values are printed every 0.1s
             /*
@@ -278,29 +321,43 @@ static void DACTask(void *pvParameters)
             		buffer[i]=val;
             		step+=0.1;
             		}
-            for(int i=0;i<50;i++)
+    		//xTimerStart(SwTimerHandle, xDelay100ms);
+
+            for(iterator=0;iterator<50;iterator++)
             {
-            	//TODO:use logger in the end
-            	PRINTF("\n\r%d is buffer[%d] value",buffer[i],i);
-            	DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, buffer[i]);
+//TODO:use logger in the end
+            	//PRINTF("\n\r%d is buffer[%d] value",buffer[i],i);
+            	//DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, lookup[iterator]);
             	if(flag_w==1)
             	{
+            		Control_RGB_LEDs(0, 1, 0);
             		PRINTF("\n\r Value is set to DAC0 J10 pin");
-            		DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, buffer[i]);
-            		flag_w=0;
+            		DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, lookup[iterator]);
+            		//flag_w=0;
             	}
-
+            	Control_RGB_LEDs(0, 0, 0);
             }
+//    		 for (;;)
+//    		        ;
     }
 }
 
 static void SwTimerCallback(TimerHandle_t xTimer)
 {
-	 for (int j=0;j<50;j++)
-	    {
-		 	 //note DAC0DAT is 16 bit buffer is uint32_t
-		flag_w=1;
-	    }
+//	 for (int j=0;j<50;j++)
+//	    {
+//		 	 //note DAC0DAT is 16 bit buffer is uint32_t
+		if(flag_w==0){
+			flag_w=1;
+		}
+		else {
+			flag_w=0;
+		}
+//		if(flag_w==1){
+//					flag_w=0;
+//				}
+//	    }
+	//DAC_SetBufferValue(DEMO_DAC_BASEADDR, 0U, lookup[iterator]);
 }
 
 static void DSPTask(void *pvParamaters)
@@ -337,7 +394,7 @@ static void DSPTask(void *pvParamaters)
 	  PRINTF("\n\rVariance : %f",variance);
 	  PRINTF("\n\rStandard deviation : %f",standard_deviation);
 	  counter++;
-
+	  flag_dsp=0;
 	  if(counter==5){
 		  vTaskSuspendAll();
 	  }
